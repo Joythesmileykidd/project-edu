@@ -1,59 +1,168 @@
+<?php
+require_once __DIR__ . '/includes/auth.php';
+require_role('school_admin');
+
+$pdo = get_db();
+$school_id = current_school_id();
+
+$learner_count = $pdo->prepare('SELECT COUNT(*) FROM learners WHERE school_id = ? AND status = "active"');
+$learner_count->execute([$school_id]);
+$learner_count = (int)$learner_count->fetchColumn();
+
+$teacher_count = $pdo->prepare('SELECT COUNT(*) FROM teachers WHERE school_id = ?');
+$teacher_count->execute([$school_id]);
+$teacher_count = (int)$teacher_count->fetchColumn();
+
+$class_count = $pdo->prepare('SELECT COUNT(*) FROM classes WHERE school_id = ?');
+$class_count->execute([$school_id]);
+$class_count = (int)$class_count->fetchColumn();
+
+// Today's attendance %, from the attendance table (0 rows yet on a fresh install)
+$att = $pdo->prepare(
+    'SELECT
+        SUM(status = "present") AS present_ct,
+        COUNT(*) AS total_ct
+     FROM attendance WHERE school_id = ? AND date = CURDATE()'
+);
+$att->execute([$school_id]);
+$att = $att->fetch();
+$attendance_today = ($att && $att['total_ct'] > 0)
+    ? round(($att['present_ct'] / $att['total_ct']) * 100, 1)
+    : null;
+
+// Last 6 months attendance trend, for the chart
+$trend = $pdo->prepare(
+    "SELECT DATE_FORMAT(date, '%b') AS m,
+            ROUND(SUM(status='present') / COUNT(*) * 100, 1) AS pct
+     FROM attendance
+     WHERE school_id = ? AND date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+     GROUP BY DATE_FORMAT(date, '%Y-%m')
+     ORDER BY date"
+);
+$trend->execute([$school_id]);
+$trend_rows = $trend->fetchAll();
+$trend_labels = array_column($trend_rows, 'm');
+$trend_values = array_column($trend_rows, 'pct');
+
+$hour = (int)date('H');
+$greeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
+$first_name = explode(' ', $_SESSION['user_name'])[0];
+
+$active_page = 'dashboard';
+$crumb = 'Dashboard';
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EduVerse - Home</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f9f9f9;
-            color: #333;
-        }
-        header {
-            background: linear-gradient(90deg, #4CAF50, #2a9d8f);
-            color: white;
-            text-align: center;
-            padding: 20px;
-        }
-        nav {
-            text-align: center;
-            margin: 20px 0;
-        }
-        nav a {
-            margin: 0 15px;
-            color: #4CAF50;
-            text-decoration: none;
-            font-size: 1.2rem;
-        }
-        nav a:hover {
-            text-decoration: underline;
-        }
-        footer {
-            text-align: center;
-            padding: 10px;
-            background-color: #333;
-            color: white;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Edu-Verse</title>
+<link rel="stylesheet" href="/assets/css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
-    <header>
-        <h1>Welcome to EduVerse</h1>
-        <p>The Future of Personalized Education</p>
-    </header>
-    <nav>
-        <a href="personalized-learning.html">Personalized Learning Path</a>
-        <a href="vr-learning.html">Immersive VR Learning</a>
-        <a href="ai-tutor.html">AI Tutor</a>
-        <a href="gamification.html">Gamification</a>
-        <a href="accessibility.html">Inclusive Features</a>
-        <a href="dashboard.html">Real-Time Dashboard</a>
-    </nav>
-    <footer>
-        <p>© 2025 EduVerse. All rights reserved.</p>
-    </footer>
+<div class="app">
+    <?php include __DIR__ . '/includes/sidebar.php'; ?>
+
+    <div>
+        <?php include __DIR__ . '/includes/topbar.php'; ?>
+
+        <main class="main">
+            <div class="page-head">
+                <div>
+                    <div class="eyebrow"><?= strtoupper(date('l, j F Y')) ?></div>
+                    <h1><?= htmlspecialchars($greeting) ?>, <?= htmlspecialchars($first_name) ?>.</h1>
+                    <p>Here's what's happening at <?= htmlspecialchars($_SESSION['school_name']) ?> today.</p>
+                </div>
+                <a href="/learners.php?new=1" class="btn">+ New registration</a>
+            </div>
+
+            <div class="grid-4">
+                <div class="card stat-card">
+                    <div class="top"><span class="label">TOTAL LEARNERS</span><span class="ic" style="background:var(--accent-light);color:var(--accent);">&#127891;</span></div>
+                    <div class="value"><?= number_format($learner_count) ?></div>
+                    <div class="trend">Active learners on record</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="top"><span class="label">TEACHING STAFF</span><span class="ic" style="background:var(--green-light);color:var(--green);">&#128100;</span></div>
+                    <div class="value"><?= number_format($teacher_count) ?></div>
+                    <div class="trend">Across <?= $class_count ?> classes</div>
+                </div>
+                <div class="card stat-card">
+                    <div class="top"><span class="label">ATTENDANCE TODAY</span><span class="ic" style="background:var(--orange-light);color:var(--orange);">&#128203;</span></div>
+                    <div class="value"><?= $attendance_today !== null ? $attendance_today . '%' : '—' ?></div>
+                    <div class="trend"><?= $attendance_today !== null ? 'Recorded today' : 'No attendance recorded yet' ?></div>
+                </div>
+                <div class="card stat-card">
+                    <div class="top"><span class="label">OPEN ALERTS</span><span class="ic" style="background:var(--blue-light);color:var(--blue);">&#128276;</span></div>
+                    <div class="value">0</div>
+                    <div class="trend">Nothing needs attention</div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-head">
+                        <div>
+                            <div class="section-title">SCHOOL OVERVIEW</div>
+                            <div class="section-sub">Attendance trend</div>
+                        </div>
+                    </div>
+                    <canvas id="trendChart" height="110"></canvas>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">SHORTCUTS</div>
+                    <div class="section-sub">Quick actions</div>
+
+                    <a href="/learners.php?new=1" class="quick-action">
+                        <div class="ic">&#127891;</div>
+                        <div><div class="t">Add learner</div><div class="s">Register a new learner</div></div>
+                        <div class="chev">›</div>
+                    </a>
+                    <a href="/classes.php" class="quick-action">
+                        <div class="ic">&#128218;</div>
+                        <div><div class="t">Manage classes</div><div class="s">View classes and subjects</div></div>
+                        <div class="chev">›</div>
+                    </a>
+                    <a href="/teachers.php?new=1" class="quick-action">
+                        <div class="ic">&#128100;</div>
+                        <div><div class="t">Add teacher</div><div class="s">Register a new teacher</div></div>
+                        <div class="chev">›</div>
+                    </a>
+                </div>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+const labels = <?= json_encode($trend_labels ?: ['No data yet']) ?>;
+const values = <?= json_encode($trend_values ?: [0]) ?>;
+
+new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: {
+        labels: labels,
+        datasets: [{
+            label: 'Attendance %',
+            data: values,
+            borderColor: '#5D4FE0',
+            backgroundColor: 'rgba(93,79,224,0.08)',
+            fill: true,
+            tension: 0.35,
+            pointRadius: 0,
+            borderWidth: 2.5
+        }]
+    },
+    options: {
+        plugins: { legend: { display: false } },
+        scales: {
+            y: { min: 0, max: 100, grid: { color: '#F0F0F5' } },
+            x: { grid: { display: false } }
+        }
+    }
+});
+</script>
 </body>
 </html>
